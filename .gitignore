@@ -1,0 +1,5 @@
+Suggested .gitignore entries to add:
+config.json
+session_logs/
+__pycache__/
+*.pyc

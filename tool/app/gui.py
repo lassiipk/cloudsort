@@ -61,7 +61,7 @@ class CloudPrepApp:
         self.root = ctk.CTk()
         self.root.title("CloudPrep Organizer")
         self.root.geometry("1280x820")
-        self.root.minsize(1100, 700)
+        self.root.resizable(False, False)
         self.root.configure(fg_color=DARK_BG)
 
         self._build_ui()
@@ -295,42 +295,69 @@ class CloudPrepApp:
         for w in self.summary_frame.winfo_children():
             w.destroy()
 
-        # Total banner
         total_files = sum(len(v) for v in scan_result.values())
-        total_size = sum(e["size"] for v in scan_result.values() for e in v)
-        banner = ctk.CTkFrame(self.summary_frame, fg_color=CARD_BG, corner_radius=10)
-        banner.pack(fill="x", padx=4, pady=(4, 12))
-        ctk.CTkLabel(banner, text=f"Total Scanned: {total_files:,} files  |  {fmt_size(total_size)}",
-                     font=FONT_BOLD, text_color=ACCENT).pack(pady=10)
+        total_size  = sum(e["size"] for v in scan_result.values() for e in v)
 
-        # Per-category cards
+        # ── Total banner ──────────────────────────────────────────────────
+        banner = ctk.CTkFrame(self.summary_frame, fg_color=CARD_BG, corner_radius=10,
+                              border_width=1, border_color=ACCENT)
+        banner.pack(fill="x", padx=4, pady=(4, 10))
+        ctk.CTkLabel(banner,
+                     text=f"✅  Scan Complete  —  {total_files:,} files  |  {fmt_size(total_size)}",
+                     font=FONT_BOLD, text_color=ACCENT).pack(side="left", padx=16, pady=10)
+        ctk.CTkLabel(banner,
+                     text="Checkboxes on the left control which categories get transferred.",
+                     font=FONT_SMALL, text_color=TEXT_DIM).pack(side="left", padx=4, pady=10)
+
+        # ── Per-category cards (ALL categories, including Uncategorized) ──
         cols = 3
         grid = ctk.CTkFrame(self.summary_frame, fg_color="transparent")
         grid.pack(fill="both", expand=True, padx=4)
         for i in range(cols):
             grid.columnconfigure(i, weight=1)
 
-        items = [(k, v) for k, v in scan_result.items() if v]
+        # Sort: known categories first, Uncategorized last
+        known   = [(k, v) for k, v in scan_result.items() if k != "Uncategorized" and v]
+        unknown = [(k, v) for k, v in scan_result.items() if k == "Uncategorized" and v]
+        items   = known + unknown
+
+        if not items:
+            ctk.CTkLabel(self.summary_frame,
+                         text="No files found in source folder.",
+                         font=FONT_MAIN, text_color=TEXT_DIM).pack(pady=20)
+            return
+
         for idx, (cat, entries) in enumerate(items):
-            row, col = divmod(idx, cols)
+            row_idx, col = divmod(idx, cols)
             cat_data = self.categories.get(cat, {})
-            color = cat_data.get("color", TEXT_DIM)
-            icon = cat_data.get("icon", "📁")
-            count = len(entries)
-            size = sum(e["size"] for e in entries)
+            color    = cat_data.get("color", TEXT_DIM) if cat != "Uncategorized" else WARNING
+            icon     = cat_data.get("icon",  "📁")      if cat != "Uncategorized" else "❓"
+            count    = len(entries)
+            size     = sum(e["size"] for e in entries)
+
+            # Highlight whether this category is checked or not
+            is_active = self.cat_vars.get(cat, tk.BooleanVar(value=False)).get()
+            border_col = color if is_active else BORDER
 
             card = ctk.CTkFrame(grid, fg_color=CARD_BG, corner_radius=10,
-                                border_width=1, border_color=BORDER)
-            card.grid(row=row, column=col, padx=4, pady=4, sticky="ew")
+                                border_width=2, border_color=border_col)
+            card.grid(row=row_idx, column=col, padx=4, pady=4, sticky="ew")
 
-            ctk.CTkLabel(card, text=f"{icon}  {cat}",
-                         font=FONT_BOLD, text_color=color).pack(anchor="w", padx=12, pady=(10, 2))
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x", padx=12, pady=(10, 0))
+            ctk.CTkLabel(top_row, text=f"{icon}  {cat}",
+                         font=FONT_BOLD, text_color=color).pack(side="left")
+            status = "✓ selected" if is_active else "— skipped"
+            status_col = SUCCESS if is_active else TEXT_DIM
+            ctk.CTkLabel(top_row, text=status,
+                         font=FONT_SMALL, text_color=status_col).pack(side="right")
+
             ctk.CTkLabel(card, text=f"{count:,} files",
-                         font=FONT_MAIN, text_color=TEXT).pack(anchor="w", padx=12)
+                         font=FONT_MAIN, text_color=TEXT).pack(anchor="w", padx=12, pady=(2, 0))
             ctk.CTkLabel(card, text=fmt_size(size),
                          font=FONT_SMALL, text_color=TEXT_DIM).pack(anchor="w", padx=12, pady=(0, 10))
 
-            # Update left panel badge
+            # Update sidebar badge
             label = self.cat_frames.get(f"{cat}_count")
             if label:
                 label.configure(text=f"{count:,}")
@@ -534,20 +561,21 @@ class CloudPrepApp:
         self.scan_result = {}
         self._draw_empty_summary()
         self.btn_scan.configure(state="disabled", text="Scanning…")
+        self.btn_preview.configure(state="disabled")
         self.scan_progress_var.set(0)
 
-        active_cats = self._get_active_categories()
-
+        # Always scan using ALL categories — checkboxes only affect Preview/Transfer
         def on_progress(current, total, name):
             pct = current / total if total else 0
-            self.scan_progress_var.set(pct)
-            self.scan_status_var.set(f"Scanning {current:,}/{total:,}  —  {name}")
+            self.root.after(0, lambda: self.scan_progress_var.set(pct))
+            self.root.after(0, lambda: self.scan_status_var.set(
+                f"Scanning {current:,}/{total:,}  —  {name}"))
 
         def on_done(result):
             self.scan_result = result
             self.root.after(0, self._on_scan_done, result)
 
-        scanner = Scanner(src, active_cats, progress_callback=on_progress, done_callback=on_done)
+        scanner = Scanner(src, self.categories, progress_callback=on_progress, done_callback=on_done)
         scanner.scan_threaded()
 
     def _on_scan_done(self, result):
@@ -564,42 +592,48 @@ class CloudPrepApp:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _run_preview(self):
-        dst = self.dst_var.get().strip()
-        if not dst:
-            messagebox.showerror("No Destination", "Please select a destination folder.")
-            return
-        if not self.scan_result:
-            messagebox.showwarning("No Scan", "Please scan a source folder first.")
+        # Check scan was actually done and has files
+        total_scanned = sum(len(v) for v in self.scan_result.values())
+        if total_scanned == 0:
+            messagebox.showwarning("No Scan Results",
+                                   "Please scan a source folder first.")
             return
 
-        # Collect selected files from enabled categories
+        # Collect files from checked categories only
         active = self._get_active_categories()
         all_files = []
         for cat in active:
             all_files.extend(self.scan_result.get(cat, []))
 
         if not all_files:
-            messagebox.showinfo("No Files", "No files in the selected categories.")
+            messagebox.showinfo("Nothing Selected",
+                                "No files match the selected categories.\n"
+                                "Check at least one category on the left panel.")
             return
 
-        self.settings["operation_mode"] = self.op_mode.get()
-        # Apply metadata toggles
+        # Apply metadata toggle states
         for cat, var in self.meta_vars.items():
             if cat in self.categories:
                 self.categories[cat]["metadata"]["enabled"] = var.get()
 
+        self.settings["operation_mode"] = self.op_mode.get()
+
+        # Use a placeholder destination for preview path building
+        dst = self.dst_var.get().strip() or "Destination"
         engine = MoveEngine(dst, self.categories, self.settings)
         self.preview_result = engine.preview(all_files)
 
-        total = len(self.preview_result)
-        total_size = sum(p["size"] for p in self.preview_result)
-        skips = sum(1 for p in self.preview_result if p["action"] == "skip")
+        total     = len(self.preview_result)
+        total_sz  = sum(p["size"] for p in self.preview_result)
+        skips     = sum(1 for p in self.preview_result if p["action"] == "skip")
         self.preview_summary_var.set(
-            f"{total:,} files  |  {fmt_size(total_size)}  |  {skips} skips/conflicts")
+            f"{total:,} files ready  |  {fmt_size(total_sz)}  |  {skips} conflicts/skips"
+            + ("  —  ⚠ Set destination before transferring!" if not self.dst_var.get().strip() else ""))
 
         self._draw_preview(self.preview_result)
-        self.btn_execute.configure(state="normal",
-                                   text=f"▶  Start Transfer ({len(self.preview_result):,} files)")
+        self.btn_execute.configure(
+            state="normal",
+            text=f"▶  Start Transfer  ({total:,} files)")
         self.tab_view.set("👁  Preview")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -608,15 +642,22 @@ class CloudPrepApp:
 
     def _run_execute(self):
         if not self.preview_result:
-            messagebox.showwarning("No Preview", "Please run Preview first.")
+            messagebox.showwarning("No Preview", "Please run Preview & Plan first.")
+            return
+
+        # Enforce destination at transfer time
+        dst = self.dst_var.get().strip()
+        if not dst:
+            messagebox.showerror("No Destination",
+                                 "Please set a Destination folder before transferring.")
             return
 
         mode = self.op_mode.get()
         verb = "MOVE" if mode == "move" else "COPY"
-        count = len(self.preview_result)
+        count = len([p for p in self.preview_result if p["action"] != "skip"])
         if not messagebox.askyesno(
-                "Confirm Operation",
-                f"About to {verb} {count:,} files to:\n{self.dst_var.get()}\n\nContinue?"):
+                "Confirm Transfer",
+                f"About to {verb} {count:,} files to:\n{dst}\n\nContinue?"):
             return
 
         self.btn_execute.configure(state="disabled", text="⏳  Running…")
@@ -646,7 +687,7 @@ class CloudPrepApp:
         def on_done(summary):
             self.root.after(0, self._on_execute_done, summary)
 
-        engine = MoveEngine(self.dst_var.get(), self.categories, self.settings,
+        engine = MoveEngine(dst, self.categories, self.settings,
                             progress_callback=on_progress,
                             log_callback=on_log,
                             done_callback=on_done)
